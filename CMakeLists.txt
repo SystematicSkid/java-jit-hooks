@@ -1,5 +1,5 @@
 cmake_minimum_required( VERSION 3.20 FATAL_ERROR )
-project( java-tests )
+project( java-jit-hooks )
 
 set( CMAKE_CXX_STANDARD 20 )
 set( CMAKE_CXX_STANDARD_REQUIRED ON )
@@ -25,7 +25,7 @@ find_package( JNI REQUIRED )
 include_directories( ${JNI_INCLUDE_DIRS} )
 
 # Create shared library from sources
-add_library( java-tests SHARED ${SOURCES} )
+add_library( java-jit-hooks SHARED ${SOURCES} )
 
 # Link jvm
-target_link_libraries( java-tests ${JNI_LIBRARIES} )
+target_link_libraries( java-jit-hooks ${JNI_LIBRARIES} )
