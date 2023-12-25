@@ -1,4 +1,4 @@
-# Java JIT Hooks
+# You are viewing this on GitHub. If you would like to comment, please visit the original post [here](https://systemfailu.re/2023/12/25/hooking-java-methods-just-in-time/).
 
 # Introduction
 Typically, applying a detour to a method on any typical processor is a trivial task with many possible options. However, when working with the Java Virtual Machine, a bit more work is required in both the research and implementation stages.
