@@ -3,6 +3,7 @@
 #include <memory>
 #include <java.hpp>
 #include <thread>
+#include <intrin.h>
 
 extern "C" {
 	int jhook_shellcode_numelems();

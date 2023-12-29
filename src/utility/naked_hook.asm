@@ -173,9 +173,9 @@ jhook_shellcode_stub PROC
 
     ; Restore the registers, flags, and FPU state
     restore_cpu_state_gpr
-    add rsp, 0x8 ; Simulate pop so the FPU state is restored properly since 'restore_fpu_state' does not pop RAX
+    add rsp, 8h ; Simulate pop so the FPU state is restored properly since 'restore_fpu_state' does not pop RAX
     restore_fpu_state dyn_addr_arr
-    sub rsp, 0x8 ; Restore the stack pointer to its original position now that the FPU state is restored
+    sub rsp, 8h ; Restore the stack pointer to its original position now that the FPU state is restored
 
     ; Check if r10 = 1
     cmp r10, 1
@@ -193,8 +193,8 @@ next_hook:
     ret
 
 end_shellcode:
-    qword SHELL_ENCODE_MAGIC
+    qword SHELL_ENDCODE_MAGIC
 
-naked_shell ENDP
+jhook_shellcode_stub ENDP
 
 END
