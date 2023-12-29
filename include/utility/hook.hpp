@@ -18,6 +18,7 @@ struct hook_context
     uintptr_t r10;
     uintptr_t r9;
     uintptr_t r8;
+    uintptr_t rbp;
     uintptr_t rdi;
     uintptr_t rsi;
     uintptr_t rdx;

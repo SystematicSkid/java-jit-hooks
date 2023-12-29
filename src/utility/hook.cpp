@@ -3,8 +3,74 @@
 #include <memory>
 #include <java.hpp>
 #include <thread>
+#include <intrin.h>
 
-extern "C" void naked_shell( );
+extern "C" {
+	int jhook_shellcode_numelems();
+	void jhook_shellcode_stub();
+	uint8_t* jhook_shellcode_getcode();
+    uint64_t jhook_end_shellcode_magic();
+}
+
+namespace hook
+{
+    /*
+    ; Pointer[0] = Whether support for XSAVE is available
+    ; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
+    ; Pointer[2] = Address of callback function
+    ; Pointer[3] = Address of next hook)*/
+    const unsigned int bit_XSAVE = 0x04000000;
+    const unsigned int bit_FXSAVE = 0x00000001;
+    const unsigned int bit_OSXSAVE = 0x08000000;
+
+    // Determines the required size of the FXSAVE/XSAVE area on the stack.
+    uint64_t get_fxsave_xsave_size() {
+        int cpu_info[4];
+        __cpuidex(cpu_info, 0x0D, 0);
+        return static_cast<uint64_t>(cpu_info[1]);
+    }
+
+    // Returns the level of XSAVE support:
+    // 0 = Neither XSAVE nor FXSAVE supported (if this is the case then you may as well throw an exception because the CPU is ancient)
+    // 1 = FXSAVE supported
+    // 2 = XSAVE and OSXSAVE supported
+    uint64_t get_xsave_support_level() {
+        int cpu_info[4];
+        __cpuid(cpu_info, 1);
+
+        // Both CPU and OS support the xsave instruction.
+        if ((cpu_info[2] & bit_XSAVE) && (cpu_info[2] & bit_OSXSAVE))
+            return 2ULL;
+
+        // The CPU supports the fxsave instruction.
+        if (cpu_info[3] & bit_FXSAVE)
+            return 1ULL;
+
+        return 0ULL;
+    }
+
+    // Simple RAII wrapper for VirtualProtect.
+    struct ScopedVirtualProtect {
+        ScopedVirtualProtect(void* Addr, size_t Size, DWORD NewProtect) : Addr(Addr), Size(Size) { VirtualProtect(Addr, Size, NewProtect, &OldProtect); }
+	    ~ScopedVirtualProtect() { VirtualProtect(Addr, Size, OldProtect, &OldProtect); }
+        
+        void* Addr;
+        size_t Size;
+        DWORD OldProtect;
+    };
+
+    // The first 'jhook_shellcode_numelems' pointer elements are at the very top of the 'jhook_shellcode_stub' function.
+    // This will set those elements to the correct values.
+    template<typename... TArgs>
+    void jhook_shellcode_setargs(TArgs... Args) {
+        ScopedVirtualProtect vp(jhook_shellcode_stub, 0x1, PAGE_EXECUTE_READWRITE);
+
+        uint8_t* pbFunc = (uint8_t*)jhook_shellcode_stub;
+        uintptr_t* pArgs[] = { (uintptr_t*)&Args... };
+        for (int i = 0; i < jhook_shellcode_numelems(); ++i)
+            *(uintptr_t*)(pbFunc + i * sizeof(uintptr_t)) = *pArgs[i];
+    }
+}
 
 namespace hook
 {
@@ -142,39 +208,38 @@ namespace hook
         return trampoline_address;
     }
 
+    void init_shell_args( PVOID callback, PVOID trampoline )
+    {
+        /* Get the size of the FXSAVE/XSAVE area */
+        uint64_t fxsave_xsave_size = get_fxsave_xsave_size( );
+        /* Get the XSAVE support level */
+        uint64_t xsave_support_level = get_xsave_support_level( );
+        /* Set the arguments for the shellcode */
+        jhook_shellcode_setargs( xsave_support_level, fxsave_xsave_size, callback, trampoline );
+    }
+
     void* create_naked_shell( PVOID callback, PVOID trampoline )
     {
+        /* Get number of shellcode arguments and initialize them */
+        int naked_shellcode_numargs = jhook_shellcode_numelems();
+        init_shell_args( callback, trampoline );
         /* Get address of naked_shell in code */
-        PVOID naked_shell_address = naked_shell;
+        uint8_t* naked_shell_address = jhook_shellcode_getcode();
+        uint8_t* naked_shell_codeptr = naked_shell_address;
+        /* Get magic number marking the end of naked shell in code */
+        uint64_t naked_shell_endmagic = jhook_end_shellcode_magic();
+        /* Iterate over all bytes in the naked shell until reaching the end */
         std::vector<std::uint8_t> naked_shell_bytes;
-        uint32_t call_offset = 0x1E + 2;
-        /* Iterate over all instructions until we reach a `jmp` */
-        std::size_t len = 0;
-        while ( true )
-        {
-            hde64s hs;
-            hde64_disasm( ( void* )( ( uintptr_t )naked_shell_address + len ), &hs );
-            /* Copy instruction to naked shell */
-            for ( std::size_t i = 0; i < hs.len; i++ )
-            {
-                naked_shell_bytes.push_back( *( std::uint8_t* )( ( uintptr_t )naked_shell_address + len + i ) );
-            }
-            len += hs.len;
-
-            /* If it's a `jmp rax`, quit */
-            if ( hs.opcode == 0xFF && hs.modrm == 0xE0 )
-                break;
-        }
-
+        while (*(uint64_t*)naked_shell_codeptr != naked_shell_endmagic)
+            naked_shell_bytes.push_back(*naked_shell_codeptr++);
+        /* Insert the shellcode arguments at the start */
+        naked_shell_bytes.insert(naked_shell_bytes.begin(), (uint8_t*)jhook_shellcode_stub, (uint8_t*)naked_shell_address);
         /* Allocate new memory for the shell */
-        PVOID naked_shell_memory = VirtualAlloc( nullptr, naked_shell_bytes.size( ), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE );
+        uint8_t* naked_shell_memory = reinterpret_cast<uint8_t*>(VirtualAlloc( nullptr, naked_shell_bytes.size( ), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ));
         /* Copy the naked shell to the allocated memory */
         memcpy( naked_shell_memory, naked_shell_bytes.data( ), naked_shell_bytes.size( ) );
-        /* Write address of callback to call_offset */
-        *( uintptr_t* )( ( uintptr_t )naked_shell_memory + call_offset ) = ( uintptr_t )callback;
-        /* Write address of trampoline to jmp rax */
-        *( uintptr_t* )( ( uintptr_t )naked_shell_memory + 0x4C + 2 ) = ( uintptr_t )trampoline;
-        return naked_shell_memory;
+        /* Return the actual first instruction in the naked shell after the embedded arguments */
+        return naked_shell_memory + (sizeof(uintptr_t) * naked_shellcode_numargs);
     }
 
     bool hook( PVOID original, PVOID hook )
@@ -195,9 +260,7 @@ namespace hook
         std::uint8_t trampolineShell[shell_size];
         DWORD64 trampolineAddress = (uintptr_t)original + length;
         construct_shell(trampolineShell, (PVOID)trampolineAddress);
-
         
-
         // Allocate memory for the trampoline and copy the original bytes
         size_t hookLength = static_cast<size_t>(length);
         std::uint8_t* trampoline = reinterpret_cast<std::uint8_t*>(create_trampoline(original, hookLength));
@@ -212,16 +275,12 @@ namespace hook
         // Insert jmp shellcode into trampoline
         memcpy(trampoline + hookLength, trampolineShell, shell_size);
         original_functions[hook] = trampoline;
-        // Update protection of trampoline memory to allow execution
-        DWORD protection;
-        VirtualProtect(trampoline, hookLength + shell_size, PAGE_EXECUTE_READWRITE, &protection);
 
         // Overwrite original function with jmp shellcode to the callback
-        DWORD originalProtection;
-        PVOID targetAddress = reinterpret_cast<PVOID>(original);
-        VirtualProtect(targetAddress, shell_size, PAGE_EXECUTE_READWRITE, &originalProtection);
-        memcpy(targetAddress, callbackShell, shell_size);
-        VirtualProtect(targetAddress, shell_size, originalProtection, &originalProtection);
+        {
+            ScopedVirtualProtect vp_orig(original, shell_size, PAGE_EXECUTE_READWRITE);
+            memcpy(original, callbackShell, shell_size);
+        }
 
         return true;
     }
@@ -234,6 +293,7 @@ namespace hook
             printf("Failed to hook function: %p", original);
             return false;
         }
+
         // Copy original bytes
         auto original_bytes = std::make_unique<std::uint8_t[]>(length);
         memcpy(original_bytes.get(), reinterpret_cast<PVOID>(original), length);
@@ -255,23 +315,19 @@ namespace hook
         // Insert jmp shellcode into trampoline
         memcpy(trampoline + hookLength, trampolineShell, shell_size);
         original_functions[hook] = trampoline;
-        // Update protection of trampoline memory to allow execution
-        DWORD protection;
-        VirtualProtect(trampoline, hookLength + shell_size, PAGE_EXECUTE_READWRITE, &protection);
 
         // Overwrite original function with jmp shellcode to the callback
-        DWORD originalProtection;
-        PVOID targetAddress = reinterpret_cast<PVOID>(original);
-        VirtualProtect(targetAddress, shell_size, PAGE_EXECUTE_READWRITE, &originalProtection);
-        memcpy(targetAddress, callbackShell, shell_size);
-        VirtualProtect(targetAddress, shell_size, originalProtection, &originalProtection);
+        /* Switched to the RAII wrapper just to simplify things */
+        {
+            ScopedVirtualProtect vp_orig(original, shell_size, PAGE_EXECUTE_READWRITE);
+            memcpy(original, callbackShell, shell_size);
+        }
 
         return true;
     }
 
     bool hook_method_code( jmethodID original, PVOID callback )
     {
-        return true;
         /* Get method pointer */
         java::Method* method = *( java::Method** )original;
         if(!method)
