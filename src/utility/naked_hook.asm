@@ -156,7 +156,7 @@ jhook_shellcode_stub PROC
 
     ; Preserve the registers, flags, and FPU state
     save_cpu_state_gpr
-    save_fpu_state dyn_addr_arr
+    ; save_fpu_state dyn_addr_arr
 
     ; Prepare for the subroutine call
     mov rcx, rsp
@@ -173,9 +173,9 @@ jhook_shellcode_stub PROC
 
     ; Restore the registers, flags, and FPU state
     restore_cpu_state_gpr
-    add rsp, 8h ; Simulate pop so the FPU state is restored properly since 'restore_fpu_state' does not pop RAX
-    restore_fpu_state dyn_addr_arr
-    sub rsp, 8h ; Restore the stack pointer to its original position now that the FPU state is restored
+    ; add rsp, 8h ; Simulate pop so the FPU state is restored properly since 'restore_fpu_state' does not pop RAX
+    ; restore_fpu_state dyn_addr_arr
+    ; sub rsp, 8h ; Restore the stack pointer to its original position now that the FPU state is restored
 
     ; Check if r10 = 1
     cmp r10, 1

@@ -15,10 +15,10 @@ extern "C" {
 namespace hook
 {
     /*
-; Pointer[0] = Whether support for XSAVE is available
-; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
-; Pointer[2] = Address of callback function
-; Pointer[3] = Address of next hook)*/
+    ; Pointer[0] = Whether support for XSAVE is available
+    ; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
+    ; Pointer[2] = Address of callback function
+    ; Pointer[3] = Address of next hook)*/
     const unsigned int bit_XSAVE = 0x04000000;
     const unsigned int bit_FXSAVE = 0x00000001;
     const unsigned int bit_OSXSAVE = 0x08000000;
@@ -276,11 +276,6 @@ namespace hook
         memcpy(trampoline + hookLength, trampolineShell, shell_size);
         original_functions[hook] = trampoline;
 
-        /* Removed since the trampoline is already allocated with RWE permissions */
-        // Update protection of trampoline memory to allow execution
-        //DWORD protection;
-        //VirtualProtect(trampoline, hookLength + shell_size, PAGE_EXECUTE_READWRITE, &protection);
-
         // Overwrite original function with jmp shellcode to the callback
         {
             ScopedVirtualProtect vp_orig(original, shell_size, PAGE_EXECUTE_READWRITE);
@@ -321,11 +316,6 @@ namespace hook
         memcpy(trampoline + hookLength, trampolineShell, shell_size);
         original_functions[hook] = trampoline;
 
-        /* Commented out because I'm guessing Sebastian did this out of habit since the trampoline is allocated with RWE permissions anyway */
-        // Update protection of trampoline memory to allow execution
-        // DWORD protection;
-        // VirtualProtect(trampoline, hookLength + shell_size, PAGE_EXECUTE_READWRITE, &protection);
-
         // Overwrite original function with jmp shellcode to the callback
         /* Switched to the RAII wrapper just to simplify things */
         {
@@ -338,9 +328,6 @@ namespace hook
 
     bool hook_method_code( jmethodID original, PVOID callback )
     {
-        /* Commented out because I'm guessing Sebastian made a mistake here? */
-        // return true;
-
         /* Get method pointer */
         java::Method* method = *( java::Method** )original;
         if(!method)
