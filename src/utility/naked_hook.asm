@@ -2,7 +2,7 @@
 ; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
 ; Pointer[2] = Address of callback function
 ; Pointer[3] = Address of next hook
-SHELL_PTR_ELEMS EQU 4
+SHELL_PTR_ELEMS EQU 5
 SHELL_ENDCODE_MAGIC EQU 02BAD4B0BBAADBABEh
 
 ; Macro for preserving all general purpose registers
@@ -158,6 +158,12 @@ jhook_shellcode_stub PROC
     save_cpu_state_gpr
     ; save_fpu_state dyn_addr_arr
 
+    ; Save FPU State
+    push r15
+    mov r15, qword ptr [dyn_addr_arr + 20h]
+    fxsave [r15]
+    pop r15
+
     ; Prepare for the subroutine call
     mov rcx, rsp
     
@@ -170,6 +176,12 @@ jhook_shellcode_stub PROC
     
     ; Deallocate the space on the stack
     add rsp, 28h
+
+    ; Restore FPU State
+    push r15
+    mov r15, qword ptr [dyn_addr_arr + 20h]
+    fxrstor [r15]
+    pop r15
 
     ; Restore the registers, flags, and FPU state
     restore_cpu_state_gpr

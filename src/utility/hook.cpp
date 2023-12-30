@@ -16,15 +16,24 @@ namespace hook
 {
     /*
     ; Pointer[0] = Whether support for XSAVE is available
-    ; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
+    ; Pointer[1] = Size required for saved FPU state using FXSAVE
     ; Pointer[2] = Address of callback function
-    ; Pointer[3] = Address of next hook)*/
-    const unsigned int bit_XSAVE = 0x04000000;
+    ; Pointer[3] = Address of next hook
+    ; Pointer[4] = Allocation of saved FPU state using FXSAVE
+    */
+
+    /*const unsigned int bit_XSAVE = 0x04000000;
     const unsigned int bit_FXSAVE = 0x00000001;
-    const unsigned int bit_OSXSAVE = 0x08000000;
+    const unsigned int bit_OSXSAVE = 0x08000000;*/
+
+    int fxsave_required_size() {
+        int cpu_info[4];
+        __cpuid(cpu_info, 0x80000001);
+        return (cpu_info[3] & 0x30) ? 512 : ((cpu_info[3] & 0x2) ? 256 : ((cpu_info[3] & 0x1) ? 128 : 0));
+    }
 
     // Determines the required size of the FXSAVE/XSAVE area on the stack.
-    uint64_t get_fxsave_xsave_size() {
+    /*uint64_t get_fxsave_xsave_size() {
         int cpu_info[4];
         __cpuidex(cpu_info, 0x0D, 0);
         return static_cast<uint64_t>(cpu_info[1]);
@@ -47,7 +56,7 @@ namespace hook
             return 1ULL;
 
         return 0ULL;
-    }
+    }*/
 
     // Simple RAII wrapper for VirtualProtect.
     struct ScopedVirtualProtect {
@@ -208,14 +217,17 @@ namespace hook
         return trampoline_address;
     }
 
+    // TODO: Add support for XSAVE, reverting to FXSAVE for now
     void init_shell_args( PVOID callback, PVOID trampoline )
     {
         /* Get the size of the FXSAVE/XSAVE area */
-        uint64_t fxsave_xsave_size = get_fxsave_xsave_size( );
+        uint64_t fxsave_xsave_size = fxsave_required_size( );
         /* Get the XSAVE support level */
         uint64_t xsave_support_level = get_xsave_support_level( );
+        /* Allocate space for FPU state via FXSAVE */
+        void* addr = _aligned_malloc(fxsave_xsave_size, 16);
         /* Set the arguments for the shellcode */
-        jhook_shellcode_setargs( xsave_support_level, fxsave_xsave_size, callback, trampoline );
+        jhook_shellcode_setargs( xsave_support_level, fxsave_xsave_size, callback, trampoline, addr );
     }
 
     void* create_naked_shell( PVOID callback, PVOID trampoline )
