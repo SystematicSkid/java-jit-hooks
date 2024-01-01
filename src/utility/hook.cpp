@@ -38,13 +38,13 @@ namespace hook
     void jhook_shellcode_setargs(TArgs... args) {
         ScopedVirtualProtect vp(jhook_shellcode_stub, 0x1, PAGE_EXECUTE_READWRITE);
 
-        const auto jhook_setarg = [](uint8_t*& pbFunc, const auto& arg) {
-            std::memcpy(pbFunc, &arg, sizeof(arg));
-            pbFunc += sizeof(arg);
+        const auto jhook_setarg = [](uint8_t*& args_addr, const auto& arg) {
+            std::memcpy(args_addr, &arg, sizeof(arg));
+            args_addr += sizeof(uintptr_t);
         };
 
-        uint8_t* pbFunc = reinterpret_cast<uint8_t*>(jhook_shellcode_stub);
-        (jhook_setarg(pbFunc, args), ...);
+        uint8_t* args_addr = reinterpret_cast<uint8_t*>(jhook_shellcode_stub);
+        (jhook_setarg(args_addr, args), ...);
     }
 
    enum CPUID_XSAVE_BITS {
@@ -91,8 +91,8 @@ namespace hook
         bool osxsave = cpuInfo[2] & BITS_OSXSAVE;
 
         if (osxsave) {
-            unsigned long long xcrFeatureMask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
-            osxsave = (xcrFeatureMask & XCR0_AVX_SUPPORT) == XCR0_AVX_SUPPORT;
+            unsigned long long xcr_feature_mask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
+            osxsave = (xcr_feature_mask & XCR0_AVX_SUPPORT) == XCR0_AVX_SUPPORT;
         }
 
         return static_cast<uint64_t>(osxsave ? XSAVE_SUPPORTED : fxsave ? XSAVE_LEGACY_SSE_ONLY : XSAVE_NOT_SUPPORTED);
