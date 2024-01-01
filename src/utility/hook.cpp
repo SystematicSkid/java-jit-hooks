@@ -84,7 +84,7 @@ namespace hook
     }
 
    uint64_t get_xsave_support_level() {
-        int cpu_info[4] = { -1 };
+        int cpu_info[4];
         __cpuid(cpu_info, 1);
 
         bool fxsave_support = cpu_info[2] & BITS_FXSAVE;
