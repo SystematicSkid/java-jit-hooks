@@ -118,8 +118,7 @@ restore_fpu_state_xsave MACRO
 ENDM
 
 ; Macro for simplifying the use of saving and restoring the FPU state
-;   Arg0: Pointer to the dynamic array of values used by the shellcode
-;   Arg1: Constant 0/1 to indicate whether to save or restore the FPU state
+;   Arg: Constant 0/1 to indicate whether to save or restore the FPU state
 preserve_fpu_state MACRO restoring
     ; Make sure all the labels are local
     Local fpu_preserve_fxsave, fpu_preserve_xsave, fpu_preserve_end
