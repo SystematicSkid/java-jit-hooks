@@ -1,9 +1,26 @@
-; Pointer[0] = Whether support for XSAVE is available
-; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
+; Pointer[0] = Support level of FXSAVE/XSAVE (0 = None, 1 = FXSAVE, 2 = XSAVE)
+; Pointer[1] = Buffer to be used for saving/restoring FPU state (nullptr if support level is 0)
 ; Pointer[2] = Address of callback function
 ; Pointer[3] = Address of next hook
+; Pointer[4] = Saved (potentially unaligned) stack pointer after preserving all registers but prior to alignment
 SHELL_PTR_ELEMS EQU 5
+
+; Magic value embedded at the end of the naked shell to easily determine its size
 SHELL_ENDCODE_MAGIC EQU 02BAD4B0BBAADBABEh
+
+; Size of a pointer
+PTR_SIZE EQU SIZEOF QWORD
+
+; Offset of each embedded argument
+ARG_FPUSAVE_SUPPORT     EQU 0 * PTR_SIZE
+ARG_FPUSAVE_BUFFER      EQU 1 * PTR_SIZE
+ARG_CALLBACK            EQU 2 * PTR_SIZE
+ARG_NEXT_HOOK           EQU 3 * PTR_SIZE
+ARG_SAVED_RSP           EQU 4 * PTR_SIZE
+
+; Constants used by the preserve_fpu_state macro to determine whether the FPU state should be saved or restored
+FPU_STATE_SAVING EQU 0
+FPU_STATE_RESTORING EQU 1
 
 ; Macro for preserving all general purpose registers
 save_cpu_state_gpr MACRO
@@ -46,84 +63,94 @@ restore_cpu_state_gpr MACRO
 	; pop rax
 ENDM
 
-; Shared macro for initializing the FPU state for saving/restoring
-setup_fpu_state MACRO fpu_state_args
-    ; Make sure the labels are unique since they are used multiple times within a single procedure
-    Local fpu_state_alignstack_xsave
-    Local fpu_state_alignstack_end
+COMMENT @ FXSAVE
+https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-1-manual.pdf#G11.53889
+ ; Macros for saving/restoring the FPU state using the FXSAVE/FXRSTOR instructions.
+ ; The buffer must be 16-byte aligned.
+ ; See Intel® 64 and IA-32 Architectures Software Developer’s Manual, Volume I, Chapter 10.5 (linked above) for more information.
+@
+save_fpu_state_fxsave MACRO
+    push r15
+    mov r15, qword ptr [args + ARG_FPUSAVE_BUFFER]
+    fxsave64 qword ptr [r15]
+    pop r15
+ENDM
 
-    ; Mask used by XSAVE/FSXAVE
-    push rdx
+restore_fpu_state_fxsave MACRO
+	push r15
+	mov r15, qword ptr [args + ARG_FPUSAVE_BUFFER]
+	fxrstor64 qword ptr [r15]
+	pop r15
+ENDM
+
+COMMENT @ XSAVE
+https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-1-manual.pdf#G14.51762
+ ; Macros for saving/restoring the FPU state using the XSAVE/XRSTOR instructions.
+ ; The buffer must be 64-byte aligned.
+ ; See Intel® 64 and IA-32 Architectures Software Developer’s Manual, Volume I, Chapter 13 (linked above) for more information.
+@
+start_fpu_state_xsave MACRO
     push rax
+    push rdx
+    mov rax, -1
+    mov rdx, -1
 
-    ; Preserve flags
+    push r15
+    mov r15, qword ptr [args + ARG_FPUSAVE_BUFFER] 
+ENDM
+
+end_fpu_state_xsave MACRO
+	pop r15
+	pop rdx
+	pop rax
+ENDM
+
+save_fpu_state_xsave MACRO
+    start_fpu_state_xsave
+    xsave64 qword ptr [r15]
+    end_fpu_state_xsave
+ENDM
+
+restore_fpu_state_xsave MACRO
+	start_fpu_state_xsave
+	xrstor64 qword ptr [r15]
+	end_fpu_state_xsave
+ENDM
+
+; Macro for simplifying the use of saving and restoring the FPU state
+;   Arg0: Pointer to the dynamic array of values used by the shellcode
+;   Arg1: Constant 0/1 to indicate whether to save or restore the FPU state
+preserve_fpu_state MACRO restoring
+    ; Make sure all the labels are local
+    Local fpu_preserve_fxsave, fpu_preserve_xsave, fpu_preserve_end
+
     pushfq
 
-    ; Aligned stack for XSAVE/FXSAVE
-    ; This must be done last so that preserved registers are not overwritten
-    push rcx
-    lea rcx, [rsp + 08h]
+    ; Check CPU support for FXSAVE/XSAVE
+    cmp qword ptr [args + ARG_FPUSAVE_SUPPORT], 1
 
-    ; Allocate space on stack for FPU state
-    sub rcx, qword ptr [fpu_state_args + 08h]
+    jl fpu_preserve_end ;       0 = No CPU support for preserving FPU state
+    je fpu_preserve_fxsave ;    1 = The CPU supports FXSAVE
+    jg fpu_preserve_xsave ;     2 = The CPU supports XSAVE
 
-    ; Sets the mask used by XSAVE/FXSAVE them to 0xFFFFFFFFFFFFFFFF prior to the instruction in order to save the entire FPU state
-    mov rdx, 0FFFFFFFFFFFFFFFFh
-    mov rax, 0FFFFFFFFFFFFFFFFh
+fpu_preserve_fxsave:
+    IF restoring EQ 1
+		restore_fpu_state_fxsave
+	ELSE
+		save_fpu_state_fxsave
+    ENDIF
 
-    ; Check for XSAVE support
-    cmp qword ptr [fpu_state_args], 1
-    je fpu_state_alignstack_xsave
+	jmp fpu_preserve_end
 
-    ; FXSAVE (16-Byte Aligned Stack)
-    and rcx, 0FFFFFFFFFFFFFFF0h
-    jmp fpu_state_alignstack_end
+fpu_preserve_xsave:
+    IF restoring EQ 1
+        restore_fpu_state_xsave
+	ELSE
+        save_fpu_state_xsave
+	ENDIF
 
-fpu_state_alignstack_xsave:
-    ; XSAVE (64-Byte Aligned Stack)
-    and rcx, 0FFFFFFFFFFFFFFC0h
-
-fpu_state_alignstack_end:
-ENDM
-
-; Saves the full FPU state
-save_fpu_state MACRO fpu_state_args
-    setup_fpu_state fpu_state_args
-
-    cmp qword ptr [fpu_state_args], 1
-    je save_fpu_state_xsave
-
-	fxsave [rcx]
-    jmp save_fpu_state_end
-
-save_fpu_state_xsave:
-	xsave [rcx]
-
-save_fpu_state_end:
-	pop rcx
-	popfq
-    pop rax
-    pop rdx
-ENDM
-
-; Restores the full FPU state
-restore_fpu_state MACRO fpu_state_args
-	setup_fpu_state fpu_state_args
-
-	cmp qword ptr [fpu_state_args], 1
-	je restore_fpu_state_xsave
-
-	fxrstor [rcx]
-	jmp restore_fpu_state_end
-
-restore_fpu_state_xsave:
-	xrstor [rcx]
-
-restore_fpu_state_end:
-	pop rcx
+fpu_preserve_end:
     popfq
-    pop rax
-    pop rdx
 ENDM
 
 .CODE
@@ -143,65 +170,70 @@ jhook_shellcode_numelems ENDP
 ; This is a simple wrapper to get the base function address for the first instruction of the shellcode.
 jhook_shellcode_getcode PROC
 	mov rax, jhook_shellcode_stub
-    lea rax, [rax + SHELL_PTR_ELEMS * 08h]
+    lea rax, [rax + SHELL_PTR_ELEMS * PTR_SIZE]
 	ret
 jhook_shellcode_getcode ENDP
 
 ; Naked function, so no prologue or epilogue generated by the compiler
-; Do not remove the ALIGN directive
-ALIGN 8
+; NOTE: Do not remove the ALIGN directive
+ALIGN 16
 jhook_shellcode_stub PROC
     ; Dynamic array of values used by the shellcode.
-	dyn_addr_arr QWORD SHELL_PTR_ELEMS DUP(0)
+	args QWORD SHELL_PTR_ELEMS DUP(0)
 
-    ; Preserve the registers, flags, and FPU state
+    ; Save FPU state
+    preserve_fpu_state FPU_STATE_SAVING
+
+    ; Save all general purpose registers/flags
     save_cpu_state_gpr
-    ; save_fpu_state dyn_addr_arr
 
-    ; Save FPU State
-    push r15
-    mov r15, qword ptr [dyn_addr_arr + 20h]
-    fxsave [r15]
-    pop r15
-
-    ; Prepare for the subroutine call
+    ; Set context pointer with original registers/flags as the first argument to the callback
     mov rcx, rsp
-    
-    ; Allocate space on stack for all registers and flags
+
+    ; Save (possibly unaligned) stack pointer
+    mov qword ptr [args + ARG_SAVED_RSP], rsp
+
+    ; Allocate shadow space for spilled registers
+    ; https://github.com/simon-whitehead/assembly-fun/blob/master/windows-x64/README.md#shadow-space
     sub rsp, 28h
 
-    ; Call subroutine at callAddress
-    mov r10, qword ptr [dyn_addr_arr + 10h] ; Replaced with the address of the callback
-    call r10
-    
-    ; Deallocate the space on the stack
-    add rsp, 28h
+    ; Make sure the stack is 16-byte aligned
+    and rsp, -16
 
-    ; Restore FPU State
-    push r15
-    mov r15, qword ptr [dyn_addr_arr + 20h]
-    fxrstor [r15]
-    pop r15
-
-    ; Restore the registers, flags, and FPU state
-    restore_cpu_state_gpr
-    ; add rsp, 8h ; Simulate pop so the FPU state is restored properly since 'restore_fpu_state' does not pop RAX
-    ; restore_fpu_state dyn_addr_arr
-    ; sub rsp, 8h ; Restore the stack pointer to its original position now that the FPU state is restored
-
-    ; Check if r10 = 1
-    cmp r10, 1
-    ; Branch to next_hook if r10 = 1
-    je next_hook
-    ; Restore rax if we are not branching
+    ; Restore original flags, using rax as a temporary variable
+    push rax
+    pushfq
+        ; Override pushed flags with original flags prior to shadow space allocation and stack alignment
+        mov rax, qword ptr [rcx]
+        mov qword ptr [rsp], rax
+    popfq
     pop rax
-    ; Jump to the original function (or the next hook)
-    mov r10, qword ptr [dyn_addr_arr + 18h] ; Replaced with the address of the next hook
+
+    ; Invoke callback function
+    mov r10, qword ptr [args + ARG_CALLBACK]
+    call r10
+
+    ; Restore saved (possibly unaligned) stack pointer
+    mov rsp, qword ptr [args + ARG_SAVED_RSP]
+    
+    ; Restore all general purpose registers/flags (excluding rax)
+    restore_cpu_state_gpr
+
+    ; Restore FPU state
+    preserve_fpu_state FPU_STATE_RESTORING
+
+    ; Check if r10 == 1 to determine whether to branch to the next hook
+    cmp r10, 1
+    je next_hook
+
+    ; Restore rax and jump to the original function (or the next hook) if we are not branching
+    pop rax
+    mov r10, qword ptr [args + ARG_NEXT_HOOK]
     jmp r10
-    ; Label to ret instead of jmp
+    
 next_hook:
     ; Simulate pop
-    add rsp, 8
+    add rsp, PTR_SIZE
     ret
 
 end_shellcode:
