@@ -84,18 +84,18 @@ namespace hook
     }
 
    uint64_t get_xsave_support_level() {
-        int cpuInfo[4] = { -1 };
-        __cpuid(cpuInfo, 1);
+        int cpu_info[4] = { -1 };
+        __cpuid(cpu_info, 1);
 
-        bool fxsave = cpuInfo[2] & BITS_FXSAVE;
-        bool osxsave = cpuInfo[2] & BITS_OSXSAVE;
+        bool fxsave_support = cpu_info[2] & BITS_FXSAVE;
+        bool osxsave_support = cpu_info[2] & BITS_OSXSAVE;
 
-        if (osxsave) {
+        if (osxsave_support) {
             unsigned long long xcr_feature_mask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
-            osxsave = (xcr_feature_mask & XCR0_AVX_SUPPORT) == XCR0_AVX_SUPPORT;
+            osxsave_support = (xcr_feature_mask & XCR0_AVX_SUPPORT) == XCR0_AVX_SUPPORT;
         }
 
-        return static_cast<uint64_t>(osxsave ? XSAVE_SUPPORTED : fxsave ? XSAVE_LEGACY_SSE_ONLY : XSAVE_NOT_SUPPORTED);
+        return static_cast<uint64_t>(osxsave_support ? XSAVE_SUPPORTED : fxsave_support ? XSAVE_LEGACY_SSE_ONLY : XSAVE_NOT_SUPPORTED);
     }
 
     size_t get_xsave_state_size(uint64_t xsave_support_level) {
