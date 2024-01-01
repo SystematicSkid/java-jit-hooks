@@ -120,8 +120,7 @@ namespace hook
         return xsave_state_buf;
     }
     
-    void init_shell_args(PVOID callback, PVOID trampoline)
-    {
+    void init_shell_args(PVOID callback, PVOID trampoline) {
         /* Get the FXSAVE/XSAVE support level */
         const uint64_t xsave_support_level = get_xsave_support_level();
         /* Get the size of the FXSAVE/XSAVE area */
