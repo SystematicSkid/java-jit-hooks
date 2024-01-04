@@ -14,41 +14,6 @@ extern "C" {
 
 namespace hook
 {
-    /*
-    ; Pointer[0] = Whether support for XSAVE is available
-    ; Pointer[1] = Size required for saved FPU state using XSAVE or FXSAVE
-    ; Pointer[2] = Address of callback function
-    ; Pointer[3] = Address of next hook)*/
-    const unsigned int bit_XSAVE = 0x04000000;
-    const unsigned int bit_FXSAVE = 0x00000001;
-    const unsigned int bit_OSXSAVE = 0x08000000;
-
-    // Determines the required size of the FXSAVE/XSAVE area on the stack.
-    uint64_t get_fxsave_xsave_size() {
-        int cpu_info[4];
-        __cpuidex(cpu_info, 0x0D, 0);
-        return static_cast<uint64_t>(cpu_info[1]);
-    }
-
-    // Returns the level of XSAVE support:
-    // 0 = Neither XSAVE nor FXSAVE supported (if this is the case then you may as well throw an exception because the CPU is ancient)
-    // 1 = FXSAVE supported
-    // 2 = XSAVE and OSXSAVE supported
-    uint64_t get_xsave_support_level() {
-        int cpu_info[4];
-        __cpuid(cpu_info, 1);
-
-        // Both CPU and OS support the xsave instruction.
-        if ((cpu_info[2] & bit_XSAVE) && (cpu_info[2] & bit_OSXSAVE))
-            return 2ULL;
-
-        // The CPU supports the fxsave instruction.
-        if (cpu_info[3] & bit_FXSAVE)
-            return 1ULL;
-
-        return 0ULL;
-    }
-
     // Simple RAII wrapper for VirtualProtect.
     struct ScopedVirtualProtect {
         ScopedVirtualProtect(void* Addr, size_t Size, DWORD NewProtect) : Addr(Addr), Size(Size) { VirtualProtect(Addr, Size, NewProtect, &OldProtect); }
@@ -59,16 +24,111 @@ namespace hook
         DWORD OldProtect;
     };
 
-    // The first 'jhook_shellcode_numelems' pointer elements are at the very top of the 'jhook_shellcode_stub' function.
-    // This will set those elements to the correct values.
+    // The naked shell has an array of pointers embedded at the start, prior to the first instruction, which are used as arguments in the shellcode
+    // This function will set those embedded arguments, in order, to the values passed in the variadic template
+    // Note that 'Pointer[4]' does not need to be passed as it's set by the shellcode itself
+    /*
+        Pointer[0] = Support level of FXSAVE/XSAVE (0 = None, 1 = FXSAVE, 2 = XSAVE)
+        Pointer[1] = Buffer to be used for saving/restoring FPU state (nullptr if support level is 0)
+        Pointer[2] = Address of callback function
+        Pointer[3] = Address of next hook
+        Pointer[4] = Saved (potentially unaligned) stack pointer after preserving all registers but prior to alignment
+    */
     template<typename... TArgs>
-    void jhook_shellcode_setargs(TArgs... Args) {
+    void jhook_shellcode_setargs(TArgs... args) {
         ScopedVirtualProtect vp(jhook_shellcode_stub, 0x1, PAGE_EXECUTE_READWRITE);
 
-        uint8_t* pbFunc = (uint8_t*)jhook_shellcode_stub;
-        uintptr_t* pArgs[] = { (uintptr_t*)&Args... };
-        for (int i = 0; i < jhook_shellcode_numelems(); ++i)
-            *(uintptr_t*)(pbFunc + i * sizeof(uintptr_t)) = *pArgs[i];
+        const auto jhook_setarg = [](uint8_t*& args_addr, const auto& arg) {
+            std::memcpy(args_addr, &arg, sizeof(arg));
+            args_addr += sizeof(uintptr_t);
+        };
+
+        uint8_t* args_addr = reinterpret_cast<uint8_t*>(jhook_shellcode_stub);
+        (jhook_setarg(args_addr, args), ...);
+    }
+
+   enum CPUID_XSAVE_BITS {
+        BITS_FXSAVE = 1 << 24,
+        BITS_XSAVE = 1 << 26,
+        BITS_OSXSAVE = 1 << 27
+    };
+
+    enum XCRO_FEATURE_MASK_BITS {
+        XCR0_SSE_BIT = 1 << 1, // Supports XMM registers
+        XCR0_AVX_BIT = 1 << 2, // Supports YMM registers
+        
+        XCR0_AVX_SUPPORT = (XCR0_SSE_BIT | XCR0_AVX_BIT)
+    };
+
+   enum XSAVE_SUPPORT_LEVEL {
+        XSAVE_NOT_SUPPORTED = 0,
+        XSAVE_LEGACY_SSE_ONLY = 1,
+        XSAVE_SUPPORTED = 2
+    };
+
+    enum XSAVE_ALIGNMENT_SIZE {
+        FXSAVE_ALIGNMENT = 16,
+        XSAVE_ALIGNMENT = 64
+    };
+
+    size_t fxsave_required_size() {
+        int cpu_info[4];
+        __cpuid(cpu_info, 0x80000001);
+        return static_cast<size_t>(cpu_info[3] & 0x30) ? 512 : ((cpu_info[3] & 0x2) ? 256 : ((cpu_info[3] & 0x1) ? 128 : 0));
+    }
+
+    size_t xsave_required_size() {
+        int cpu_info[4];
+        __cpuidex(cpu_info, 0x0D, 0);
+        return static_cast<size_t>(cpu_info[1]);
+    }
+
+   uint64_t get_xsave_support_level() {
+        int cpu_info[4];
+        __cpuid(cpu_info, 1);
+
+        bool fxsave_support = cpu_info[2] & BITS_FXSAVE;
+        bool osxsave_support = cpu_info[2] & BITS_OSXSAVE;
+
+        if (osxsave_support) {
+            unsigned long long xcr_feature_mask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
+            osxsave_support = (xcr_feature_mask & XCR0_AVX_SUPPORT) == XCR0_AVX_SUPPORT;
+        }
+
+        return static_cast<uint64_t>(osxsave_support ? XSAVE_SUPPORTED : fxsave_support ? XSAVE_LEGACY_SSE_ONLY : XSAVE_NOT_SUPPORTED);
+    }
+
+    size_t get_xsave_state_size(uint64_t xsave_support_level) {
+        switch (xsave_support_level) {
+        case XSAVE_SUPPORTED:
+            return xsave_required_size();
+        case XSAVE_LEGACY_SSE_ONLY:
+            return fxsave_required_size();
+        default:
+            return 0ULL;
+        }
+    }
+
+    void* alloc_xsave_state(uint64_t xsave_support_level, size_t xsave_state_len) {
+        const size_t xsave_state_align = (xsave_support_level == XSAVE_SUPPORTED ? XSAVE_ALIGNMENT : FXSAVE_ALIGNMENT);
+        void* xsave_state_buf = (xsave_support_level != XSAVE_NOT_SUPPORTED ? _aligned_malloc(xsave_state_len, xsave_state_align) : nullptr);
+
+        /* Zero out the FPU state buffer */
+        if (xsave_state_buf != nullptr)
+            memset(xsave_state_buf, 0, xsave_state_len);
+
+        return xsave_state_buf;
+    }
+    
+    void init_shell_args(PVOID callback, PVOID trampoline) {
+        /* Get the FXSAVE/XSAVE support level */
+        const uint64_t xsave_support_level = get_xsave_support_level();
+        /* Get the size of the FXSAVE/XSAVE area */
+        const size_t xsave_state_len = get_xsave_state_size(xsave_support_level);
+        /* Allocate an aligned buffer for the preserved FPU state */
+        void* fpu_state_buf = alloc_xsave_state(xsave_support_level, xsave_state_len);
+        /* Set the arguments for the shellcode */
+        jhook_shellcode_setargs(xsave_support_level, fpu_state_buf, callback, trampoline);
     }
 }
 
@@ -206,16 +266,6 @@ namespace hook
         size = trampoline.size( );
 
         return trampoline_address;
-    }
-
-    void init_shell_args( PVOID callback, PVOID trampoline )
-    {
-        /* Get the size of the FXSAVE/XSAVE area */
-        uint64_t fxsave_xsave_size = get_fxsave_xsave_size( );
-        /* Get the XSAVE support level */
-        uint64_t xsave_support_level = get_xsave_support_level( );
-        /* Set the arguments for the shellcode */
-        jhook_shellcode_setargs( xsave_support_level, fxsave_xsave_size, callback, trampoline );
     }
 
     void* create_naked_shell( PVOID callback, PVOID trampoline )
