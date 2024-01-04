@@ -14,8 +14,8 @@ PTR_SIZE EQU SIZEOF QWORD
 ; Offset of each embedded argument
 ARG_FPUSAVE_SUPPORT     EQU 0 * PTR_SIZE
 ARG_FPUSAVE_BUFFER      EQU 1 * PTR_SIZE
-ARG_CALLBACK            EQU 2 * PTR_SIZE
-ARG_NEXT_HOOK           EQU 3 * PTR_SIZE
+ARG_CALLHOOK            EQU 2 * PTR_SIZE
+ARG_CALLORIG            EQU 3 * PTR_SIZE
 ARG_SAVED_RSP           EQU 4 * PTR_SIZE
 
 ; Constants used by the preserve_fpu_state macro to determine whether the FPU state should be saved or restored
@@ -59,8 +59,7 @@ restore_cpu_state_gpr MACRO
 	pop rdx
 	pop rcx
 	pop rbx
-    ; This should only be used if the return value is not needed
-	; pop rax
+	pop rax
 ENDM
 
 COMMENT @ FXSAVE
@@ -186,6 +185,9 @@ jhook_shellcode_stub PROC
     ; Save all general purpose registers/flags
     save_cpu_state_gpr
 
+    ; Push the 'skip_original_call' argument for the callback function (default to 0)
+    push qword 0
+
     ; Set context pointer with original registers/flags as the first argument to the callback
     mov rcx, rsp
 
@@ -199,40 +201,32 @@ jhook_shellcode_stub PROC
     ; Make sure the stack is 16-byte aligned
     and rsp, -16
 
-    ; Restore original flags, using rax as a temporary variable
-    push rax
-    pushfq
-        ; Override pushed flags with original flags prior to shadow space allocation and stack alignment
-        mov rax, qword ptr [rcx]
-        mov qword ptr [rsp], rax
-    popfq
-    pop rax
-
     ; Invoke callback function
-    mov r10, qword ptr [args + ARG_CALLBACK]
-    call r10
+    ; Note that the preserved registers are passed as a context argument and may be freely modified
+    ; Any modified registers will be reflected after restoring the CPU state below
+    call qword ptr [args + ARG_CALLHOOK]
 
     ; Restore saved (possibly unaligned) stack pointer
     mov rsp, qword ptr [args + ARG_SAVED_RSP]
     
-    ; Restore all general purpose registers/flags (excluding rax)
+    ; Restore all general purpose registers/flags
     restore_cpu_state_gpr
+
+    ; Adjust for the additional skip_original_call argument
+    add rsp, PTR_SIZE
 
     ; Restore FPU state
     preserve_fpu_state FPU_STATE_RESTORING
 
-    ; Check if r10 == 1 to determine whether to branch to the next hook
-    cmp r10, 1
-    je next_hook
+    ; Check if skip_original_call was set by the callback to determine where to go next
+    cmp qword ptr [rsp - PTR_SIZE], 1
+    je skip_original_call
 
-    ; Restore rax and jump to the original function (or the next hook) if we are not branching
-    pop rax
-    mov r10, qword ptr [args + ARG_NEXT_HOOK]
-    jmp r10
+    ; Branch back to the original function (skip_original_call == 0)
+    jmp qword ptr [args + ARG_CALLORIG]
     
-next_hook:
-    ; Simulate pop
-    add rsp, PTR_SIZE
+    ; Skip branching back to the original call trampoline (skip_original_call == 1)
+skip_original_call:
     ret
 
 end_shellcode:
