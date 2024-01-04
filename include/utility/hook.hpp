@@ -9,6 +9,7 @@
 
 struct hook_context
 {
+    uintptr_t skip_original_call;
     uintptr_t flags;
     uintptr_t r15;
     uintptr_t r14;
