@@ -186,7 +186,8 @@ jhook_shellcode_stub PROC
     save_cpu_state_gpr
 
     ; Push the 'skip_original_call' argument for the callback function (default to 0)
-    push qword 0
+    push rax
+    mov qword ptr [rsp], 0
 
     ; Set context pointer with original registers/flags as the first argument to the callback
     mov rcx, rsp
